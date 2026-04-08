@@ -286,6 +286,7 @@ class KnowledgeGraph:
                 JOIN entities o ON t.object = o.id
                 WHERE (t.subject = ? OR t.object = ?)
                 ORDER BY t.valid_from ASC NULLS LAST
+                LIMIT 100
             """,
                 (eid, eid),
             ).fetchall()

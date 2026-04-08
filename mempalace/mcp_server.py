@@ -2,7 +2,7 @@
 """
 MemPalace MCP Server — read/write palace access for Claude Code
 ================================================================
-Install: claude mcp add mempalace -- python /path/to/mcp_server.py
+Install: claude mcp add mempalace -- python -m mempalace.mcp_server
 
 Tools (read):
   mempalace_status          — total drawers, wing/room breakdown
@@ -24,6 +24,7 @@ import hashlib
 from datetime import datetime
 
 from .config import MempalaceConfig
+from .version import __version__
 from .searcher import search_memories
 from .palace_graph import traverse, find_tunnels, graph_stats
 import chromadb
@@ -52,7 +53,6 @@ def _get_collection(create=False):
 def _no_palace():
     return {
         "error": "No palace found",
-        "palace_path": _config.palace_path,
         "hint": "Run: mempalace init <dir> && mempalace mine <dir>",
     }
 
@@ -68,7 +68,7 @@ def tool_status():
     wings = {}
     rooms = {}
     try:
-        all_meta = col.get(include=["metadatas"])["metadatas"]
+        all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
         for m in all_meta:
             w = m.get("wing", "unknown")
             r = m.get("room", "unknown")
@@ -125,7 +125,7 @@ def tool_list_wings():
         return _no_palace()
     wings = {}
     try:
-        all_meta = col.get(include=["metadatas"])["metadatas"]
+        all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
         for m in all_meta:
             w = m.get("wing", "unknown")
             wings[w] = wings.get(w, 0) + 1
@@ -140,7 +140,7 @@ def tool_list_rooms(wing: str = None):
         return _no_palace()
     rooms = {}
     try:
-        kwargs = {"include": ["metadatas"]}
+        kwargs = {"include": ["metadatas"], "limit": 10000}
         if wing:
             kwargs["where"] = {"wing": wing}
         all_meta = col.get(**kwargs)["metadatas"]
@@ -158,7 +158,7 @@ def tool_get_taxonomy():
         return _no_palace()
     taxonomy = {}
     try:
-        all_meta = col.get(include=["metadatas"])["metadatas"]
+        all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
         for m in all_meta:
             w = m.get("wing", "unknown")
             r = m.get("room", "unknown")
@@ -406,6 +406,7 @@ def tool_diary_read(agent_name: str, last_n: int = 10):
         results = col.get(
             where={"$and": [{"wing": wing}, {"room": "diary"}]},
             include=["documents", "metadatas"],
+            limit=10000,
         )
 
         if not results["ids"]:
@@ -700,7 +701,7 @@ def handle_request(request):
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "mempalace", "version": "2.0.0"},
+                "serverInfo": {"name": "mempalace", "version": __version__},
             },
         }
     elif method == "notifications/initialized":
@@ -725,6 +726,17 @@ def handle_request(request):
                 "id": req_id,
                 "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"},
             }
+        # Coerce argument types based on input_schema.
+        # MCP JSON transport may deliver integers as floats or strings;
+        # ChromaDB and Python slicing require native int.
+        schema_props = TOOLS[tool_name]["input_schema"].get("properties", {})
+        for key, value in list(tool_args.items()):
+            prop_schema = schema_props.get(key, {})
+            declared_type = prop_schema.get("type")
+            if declared_type == "integer" and not isinstance(value, int):
+                tool_args[key] = int(value)
+            elif declared_type == "number" and not isinstance(value, (int, float)):
+                tool_args[key] = float(value)
         try:
             result = TOOLS[tool_name]["handler"](**tool_args)
             return {
@@ -732,9 +744,13 @@ def handle_request(request):
                 "id": req_id,
                 "result": {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]},
             }
-        except Exception as e:
-            logger.error(f"Tool error in {tool_name}: {e}")
-            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": str(e)}}
+        except Exception:
+            logger.exception(f"Tool error in {tool_name}")
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32000, "message": "Internal tool error"},
+            }
 
     return {
         "jsonrpc": "2.0",
