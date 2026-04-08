@@ -13,8 +13,8 @@ CONVERTED_ROOT="/data/converted"
 PYTHON="$VENV/bin/python"
 MEMPALACE="$VENV/bin/mempalace"
 
-# List of developers — edit this to match your team
-DEVELOPERS=(alice bob carol dave eve)
+# Team members — username matches transcript folder names
+DEVELOPERS=(chinojosa kolgin chuerta fmiranda)
 
 source "$VENV/bin/activate"
 
