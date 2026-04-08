@@ -7,6 +7,7 @@ Supported:
     - Claude.ai JSON export
     - ChatGPT conversations.json
     - Claude Code JSONL
+    - Cursor Agent JSONL
     - Slack JSON export
     - Plain text (pass through for paragraph chunking)
 
@@ -51,6 +52,10 @@ def normalize(filepath: str) -> str:
 def _try_normalize_json(content: str) -> Optional[str]:
     """Try all known JSON chat schemas."""
 
+    normalized = _try_cursor_jsonl(content)
+    if normalized:
+        return normalized
+
     normalized = _try_claude_code_jsonl(content)
     if normalized:
         return normalized
@@ -90,6 +95,52 @@ def _try_claude_code_jsonl(content: str) -> Optional[str]:
             if text:
                 messages.append(("assistant", text))
     if len(messages) >= 2:
+        return _messages_to_transcript(messages)
+    return None
+
+
+def _try_cursor_jsonl(content: str) -> Optional[str]:
+    """Cursor Agent JSONL sessions — role-based with message.content blocks."""
+    lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
+    messages = []
+    has_cursor_markers = False
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        role = entry.get("role", "")
+        message = entry.get("message", {})
+        if not isinstance(message, dict) or "content" not in message:
+            continue
+        content_blocks = message.get("content", [])
+        if not isinstance(content_blocks, list):
+            continue
+        # Detect Cursor-specific tool_use blocks (Read, Shell, Grep, etc.)
+        for block in content_blocks:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                has_cursor_markers = True
+                break
+        text_parts = []
+        for block in content_blocks:
+            if isinstance(block, dict) and block.get("type") == "text":
+                raw = block.get("text", "")
+                # Strip Cursor's XML wrappers from user messages
+                if role == "user":
+                    import re
+                    uq = re.search(r"<user_query>(.*?)</user_query>", raw, re.DOTALL)
+                    raw = uq.group(1).strip() if uq else raw
+                text_parts.append(raw)
+        text = " ".join(text_parts).strip()
+        if not text:
+            continue
+        if role == "user":
+            messages.append(("user", text))
+        elif role == "assistant":
+            messages.append(("assistant", text))
+    if has_cursor_markers and len(messages) >= 2:
         return _messages_to_transcript(messages)
     return None
 
